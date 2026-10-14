@@ -1,7 +1,7 @@
 (() => {
   const root = document.getElementById("lactose-app");
   if (!root) return;
-  const DATA_URL = "https://cdn.jsdelivr.net/gh/YOUR-GITHUB-USERNAME/lactose-embed@main/games-catalog.json";
+  const DATA_URL = "https://cdn.jsdelivr.net/gh/samuelwinn/lactose-embed@main/games-catalog.json";
   root.innerHTML = `
     <div class="lx-shell">
       <header class="lx-header"><div class="lx-brand"><span class="lx-mark">L</span><div><h1>LACTOSE</h1><p>GAME LIBRARY</p></div></div><div class="lx-count" id="lx-count">Loading games…</div></header>
