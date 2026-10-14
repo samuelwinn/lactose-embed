@@ -87,6 +87,7 @@
   // Open the game in a separate tab when a card is clicked.
   function openGame(game) {
     const gameTab = window.open("about:blank", "_blank");
+    alert("Game button clicked!");
 
     if (!gameTab) {
       status.textContent =
