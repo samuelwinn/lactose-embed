@@ -1,9 +1,11 @@
+
 (() => {
   const root = document.getElementById("lactose-app");
   if (!root) return;
 
+  // Load the catalog directly from GitHub instead of jsDelivr.
   const DATA_URL =
-    "https://cdn.jsdelivr.net/gh/samuelwinn/lactose-embed@main/games-catalog.json";
+    "https://raw.githubusercontent.com/samuelwinn/lactose-embed/main/games-catalog.json";
 
   const TREE_URL =
     "https://api.github.com/repos/samuelwinn/lactose-games/git/trees/main?recursive=1";
@@ -27,14 +29,9 @@
       <section class="lx-controls">
         <label class="lx-search">
           <span aria-hidden="true">⌕</span>
-          <input
-            id="lx-search"
-            type="search"
-            placeholder="Search games…"
-            autocomplete="off"
-          >
+          <input id="lx-search" type="search"
+            placeholder="Search games…" autocomplete="off">
         </label>
-
         <select id="lx-sort" aria-label="Sort games">
           <option value="az">Name: A–Z</option>
           <option value="za">Name: Z–A</option>
@@ -51,7 +48,6 @@
   `;
 
   const $ = id => root.querySelector("#" + id);
-
   const grid = $("lx-grid");
   const search = $("lx-search");
   const sort = $("lx-sort");
@@ -64,8 +60,6 @@
 
   const PAGE_SIZE = 60;
 
-  // Normalize names so, for example, "1v1.LOL" can match "1v1.html"
-  // when the shortened filename is an unambiguous match.
   function normalizeName(value) {
     return String(value || "")
       .normalize("NFKD")
@@ -74,23 +68,24 @@
       .replace(/[^a-z0-9]/g, "");
   }
 
-  // Load the list of HTML files hosted by GitHub Pages.
+  // Retrieve the list of uploaded HTML files once per page load.
   const filesPromise = fetch(TREE_URL)
     .then(response => {
       if (!response.ok) {
-        throw new Error("Could not retrieve the hosted game file list.");
+        throw new Error(
+          "Could not retrieve the game list (" + response.status + ")."
+        );
       }
       return response.json();
     })
     .then(data => {
       if (!Array.isArray(data.tree)) {
-        throw new Error("GitHub returned an invalid file list.");
+        throw new Error("Invalid GitHub file list.");
       }
 
-      const files = data.tree
+      return data.tree
         .filter(item =>
-          item.type === "blob" &&
-          /\.html?$/i.test(item.path)
+          item.type === "blob" && /\.html?$/i.test(item.path)
         )
         .map(item => ({
           path: item.path,
@@ -98,43 +93,31 @@
             item.path.split("/").pop().replace(/\.html?$/i, "")
           )
         }));
-
-      if (!files.length) {
-        throw new Error("No HTML game files were found.");
-      }
-
-      return files;
     });
 
-  // Prefer exact filename matches. Only use a shortened/extended
-  // name when it identifies exactly one file.
   function findGameFile(game, files) {
     const wanted = normalizeName(game.name);
-
     if (!wanted) return null;
 
     const exact = files.filter(file => file.name === wanted);
 
     if (exact.length === 1) return exact[0];
+
     if (exact.length > 1) {
       const rootMatches = exact.filter(file => !file.path.includes("/"));
       return rootMatches.length === 1 ? rootMatches[0] : null;
     }
 
-    const possible = files.filter(file => {
-      if (Math.min(wanted.length, file.name.length) < 3) {
-        return false;
-      }
-
-      return (
+    const possible = files.filter(file =>
+      Math.min(wanted.length, file.name.length) >= 3 &&
+      (
         file.name.startsWith(wanted) ||
         wanted.startsWith(file.name)
-      );
-    });
+      )
+    );
 
     if (possible.length === 1) return possible[0];
 
-    // If several files share a name, prefer a unique file at the root.
     const rootMatches = possible.filter(file =>
       !file.path.includes("/")
     );
@@ -152,7 +135,7 @@
     })[character]);
   }
 
-  function showTabMessage(tab, title, message) {
+  function showMessage(tab, title, message) {
     if (!tab || tab.closed) return;
 
     tab.document.open();
@@ -166,13 +149,12 @@
         <style>
           body {
             margin: 0;
-            padding: 48px 24px;
+            padding: 40px 24px;
             background: #111;
             color: #eee;
             font: 16px/1.6 system-ui, sans-serif;
           }
           main { max-width: 680px; margin: auto; }
-          h1 { font-size: 26px; }
           p { color: #ccc; }
         </style>
       </head>
@@ -187,61 +169,78 @@
     tab.document.close();
   }
 
-  // Open about:blank immediately during the click, then navigate
-  // that tab to the matching hosted HTML game.
   function openGame(game) {
+    // Open synchronously during the click to reduce popup blocking.
     const gameTab = window.open("about:blank", "_blank");
 
     if (!gameTab) {
       status.textContent =
-        "Your browser blocked the new tab. Allow pop-ups for this site, then try again.";
+        "The browser blocked the new tab. Allow pop-ups and try again.";
       return;
     }
 
-    showTabMessage(
-      gameTab,
-      "Opening " + game.name,
-      "Finding the hosted game file…"
-    );
+    showMessage(gameTab, "Opening " + game.name, "Loading game HTML…");
 
     filesPromise
       .then(files => {
-        if (gameTab.closed) return;
-
         const file = findGameFile(game, files);
 
         if (!file) {
-          showTabMessage(
-            gameTab,
-            "Game file not found",
-            'Could not find a unique HTML filename matching "' +
-              game.name +
-              '". Check that the game is uploaded and that its filename matches the game title.'
+          throw new Error(
+            'No unique HTML filename matches "' + game.name + '".'
           );
-
-          status.textContent =
-            'Could not match "' + game.name + '" to an HTML filename.';
-          return;
         }
 
         const encodedPath = file.path
           .split("/")
-          .map(segment => encodeURIComponent(segment))
+          .map(part => encodeURIComponent(part))
           .join("/");
 
-        gameTab.location.href = PAGES_BASE + "/" + encodedPath;
+        const gameURL = PAGES_BASE + "/" + encodedPath;
+
+        // Fetch the HTML source instead of redirecting to the game URL.
+        return fetch(gameURL).then(response => {
+          if (!response.ok) {
+            throw new Error(
+              "Could not load game HTML (" + response.status + ")."
+            );
+          }
+          return response.text();
+        }).then(html => ({ html, gameURL }));
+      })
+      .then(({ html, gameURL }) => {
+        if (gameTab.closed) return;
+
+        // Make relative URLs inside the game resolve against its
+        // original GitHub Pages location.
+        if (!/<base\b/i.test(html)) {
+          const baseTag = `<base href="${gameURL.replace(/"/g, "&quot;")}">`;
+
+          if (/<head\b[^>]*>/i.test(html)) {
+            html = html.replace(/<head\b[^>]*>/i, match =>
+              match + baseTag
+            );
+          } else {
+            html = baseTag + html;
+          }
+        }
+
+        // Write the fetched source into about:blank to run it there.
+        gameTab.document.open();
+        gameTab.document.write(html);
+        gameTab.document.close();
       })
       .catch(error => {
-        console.error("LACTOSE game file error:", error);
+        console.error("LACTOSE game loading error:", error);
 
-        showTabMessage(
+        showMessage(
           gameTab,
-          "Couldn't find the game files",
-          "LACTOSE couldn't retrieve the GitHub Pages file list. Check that the lactose-games repository is public and GitHub Pages is enabled."
+          "Couldn't load " + game.name,
+          error.message +
+          " If this happens on your school computer, its network may be blocking a required GitHub address."
         );
 
-        status.textContent =
-          "Couldn't retrieve the hosted game file list.";
+        status.textContent = "Couldn't load " + game.name + ".";
       });
   }
 
@@ -258,7 +257,6 @@
         undefined,
         { sensitivity: "base" }
       );
-
       return sort.value === "za" ? -comparison : comparison;
     });
 
@@ -293,7 +291,6 @@
 
       card.append(icon, title, action);
       card.addEventListener("click", () => openGame(game));
-
       fragment.append(card);
     }
 
@@ -302,11 +299,8 @@
     count.textContent = filtered.length.toLocaleString() + " games";
 
     status.textContent = filtered.length
-      ? "Showing " +
-        shown.length.toLocaleString() +
-        " of " +
-        filtered.length.toLocaleString() +
-        " games"
+      ? "Showing " + shown.length.toLocaleString() +
+        " of " + filtered.length.toLocaleString() + " games"
       : "No games match your search.";
 
     $("lx-more-wrap").hidden = visibleCount >= filtered.length;
@@ -323,13 +317,13 @@
   fetch(DATA_URL)
     .then(response => {
       if (!response.ok) {
-        throw new Error("Catalog request failed: " + response.status);
+        throw new Error("Catalog request failed (" + response.status + ").");
       }
       return response.json();
     })
     .then(data => {
       if (!Array.isArray(data)) {
-        throw new Error("The catalog must contain a JSON array.");
+        throw new Error("The catalog is not a JSON array.");
       }
 
       games = data.filter(game =>
@@ -344,6 +338,6 @@
       console.error("LACTOSE catalog error:", error);
       count.textContent = "Catalog unavailable";
       status.textContent =
-        "Could not load the catalog. Check the catalog URL and repository.";
+        "Could not load the catalog. Check the browser Console for the exact error.";
     });
 })();
