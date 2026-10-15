@@ -5,6 +5,12 @@
   const DATA_URL =
     "https://cdn.jsdelivr.net/gh/samuelwinn/lactose-embed@main/games-catalog.json";
 
+  const TREE_URL =
+    "https://api.github.com/repos/samuelwinn/lactose-games/git/trees/main?recursive=1";
+
+  const PAGES_BASE =
+    "https://samuelwinn.github.io/lactose-games";
+
   root.innerHTML = `
     <div class="lx-shell">
       <header class="lx-header">
@@ -21,8 +27,12 @@
       <section class="lx-controls">
         <label class="lx-search">
           <span aria-hidden="true">⌕</span>
-          <input id="lx-search" type="search"
-            placeholder="Search games…" autocomplete="off">
+          <input
+            id="lx-search"
+            type="search"
+            placeholder="Search games…"
+            autocomplete="off"
+          >
         </label>
 
         <select id="lx-sort" aria-label="Sort games">
@@ -35,7 +45,7 @@
       <section id="lx-grid" class="lx-grid" aria-label="Games"></section>
 
       <div class="lx-more" id="lx-more-wrap" hidden>
-        <button id="lx-more">Load more</button>
+        <button id="lx-more" type="button">Load more</button>
       </div>
     </div>
   `;
@@ -54,87 +64,192 @@
 
   const PAGE_SIZE = 60;
 
-  // Convert a Google Drive sharing link into a direct file URL.
-  function directGameUrl(url) {
-    try {
-      const parsed = new URL(url);
+  // Normalize names so, for example, "1v1.LOL" can match "1v1.html"
+  // when the shortened filename is an unambiguous match.
+  function normalizeName(value) {
+    return String(value || "")
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+  }
 
-      if (parsed.hostname !== "drive.google.com") {
-        return url;
+  // Load the list of HTML files hosted by GitHub Pages.
+  const filesPromise = fetch(TREE_URL)
+    .then(response => {
+      if (!response.ok) {
+        throw new Error("Could not retrieve the hosted game file list.");
+      }
+      return response.json();
+    })
+    .then(data => {
+      if (!Array.isArray(data.tree)) {
+        throw new Error("GitHub returned an invalid file list.");
       }
 
-      let fileId = parsed.searchParams.get("id");
+      const files = data.tree
+        .filter(item =>
+          item.type === "blob" &&
+          /\.html?$/i.test(item.path)
+        )
+        .map(item => ({
+          path: item.path,
+          name: normalizeName(
+            item.path.split("/").pop().replace(/\.html?$/i, "")
+          )
+        }));
 
-      const match = parsed.pathname.match(/\/file\/d\/([^/]+)/);
-
-      if (!fileId && match) {
-        fileId = match[1];
+      if (!files.length) {
+        throw new Error("No HTML game files were found.");
       }
 
-      if (!fileId) {
-        return url;
+      return files;
+    });
+
+  // Prefer exact filename matches. Only use a shortened/extended
+  // name when it identifies exactly one file.
+  function findGameFile(game, files) {
+    const wanted = normalizeName(game.name);
+
+    if (!wanted) return null;
+
+    const exact = files.filter(file => file.name === wanted);
+
+    if (exact.length === 1) return exact[0];
+    if (exact.length > 1) {
+      const rootMatches = exact.filter(file => !file.path.includes("/"));
+      return rootMatches.length === 1 ? rootMatches[0] : null;
+    }
+
+    const possible = files.filter(file => {
+      if (Math.min(wanted.length, file.name.length) < 3) {
+        return false;
       }
 
       return (
-        "https://drive.google.com/uc?export=download&id=" +
-        encodeURIComponent(fileId)
+        file.name.startsWith(wanted) ||
+        wanted.startsWith(file.name)
       );
-    } catch (error) {
-      return url;
-    }
+    });
+
+    if (possible.length === 1) return possible[0];
+
+    // If several files share a name, prefer a unique file at the root.
+    const rootMatches = possible.filter(file =>
+      !file.path.includes("/")
+    );
+
+    return rootMatches.length === 1 ? rootMatches[0] : null;
   }
 
-  // Open the game in a separate tab when a card is clicked.
+  function escapeHTML(value) {
+    return String(value).replace(/[&<>"']/g, character => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    })[character]);
+  }
+
+  function showTabMessage(tab, title, message) {
+    if (!tab || tab.closed) return;
+
+    tab.document.open();
+    tab.document.write(`
+      <!doctype html>
+      <html lang="en">
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>${escapeHTML(title)}</title>
+        <style>
+          body {
+            margin: 0;
+            padding: 48px 24px;
+            background: #111;
+            color: #eee;
+            font: 16px/1.6 system-ui, sans-serif;
+          }
+          main { max-width: 680px; margin: auto; }
+          h1 { font-size: 26px; }
+          p { color: #ccc; }
+        </style>
+      </head>
+      <body>
+        <main>
+          <h1>${escapeHTML(title)}</h1>
+          <p>${escapeHTML(message)}</p>
+        </main>
+      </body>
+      </html>
+    `);
+    tab.document.close();
+  }
+
+  // Open about:blank immediately during the click, then navigate
+  // that tab to the matching hosted HTML game.
   function openGame(game) {
     const gameTab = window.open("about:blank", "_blank");
-    alert("Game button clicked!");
 
     if (!gameTab) {
       status.textContent =
-        "The browser blocked the new tab. Allow pop-ups for this site, then try again.";
+        "Your browser blocked the new tab. Allow pop-ups for this site, then try again.";
       return;
     }
 
-    // Show a loading message in the new tab.
-    gameTab.document.open();
-    gameTab.document.write(`
-      <!doctype html>
-      <html lang="en">
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <title>Loading game...</title>
-          <style>
-            body {
-              margin: 0;
-              min-height: 100vh;
-              display: grid;
-              place-items: center;
-              background: #111;
-              color: #fff;
-              font: 16px Arial, sans-serif;
-            }
-          </style>
-        </head>
-        <body>
-          <p>Loading game...</p>
-        </body>
-      </html>
-    `);
-    gameTab.document.close();
+    showTabMessage(
+      gameTab,
+      "Opening " + game.name,
+      "Finding the hosted game file…"
+    );
 
-    // Navigate to the game's direct Google Drive URL.
-    gameTab.location.href = directGameUrl(game.html);
+    filesPromise
+      .then(files => {
+        if (gameTab.closed) return;
+
+        const file = findGameFile(game, files);
+
+        if (!file) {
+          showTabMessage(
+            gameTab,
+            "Game file not found",
+            'Could not find a unique HTML filename matching "' +
+              game.name +
+              '". Check that the game is uploaded and that its filename matches the game title.'
+          );
+
+          status.textContent =
+            'Could not match "' + game.name + '" to an HTML filename.';
+          return;
+        }
+
+        const encodedPath = file.path
+          .split("/")
+          .map(segment => encodeURIComponent(segment))
+          .join("/");
+
+        gameTab.location.href = PAGES_BASE + "/" + encodedPath;
+      })
+      .catch(error => {
+        console.error("LACTOSE game file error:", error);
+
+        showTabMessage(
+          gameTab,
+          "Couldn't find the game files",
+          "LACTOSE couldn't retrieve the GitHub Pages file list. Check that the lactose-games repository is public and GitHub Pages is enabled."
+        );
+
+        status.textContent =
+          "Couldn't retrieve the hosted game file list.";
+      });
   }
 
-  // Filter and sort the catalog.
   function applyFilters() {
     const query = search.value.trim().toLocaleLowerCase();
 
     filtered = games.filter(game =>
-      String(game.name || "")
-        .toLocaleLowerCase()
-        .includes(query)
+      String(game.name || "").toLocaleLowerCase().includes(query)
     );
 
     filtered.sort((a, b) => {
@@ -151,17 +266,14 @@
     render();
   }
 
-  // Display the game cards.
   function render() {
     const shown = filtered.slice(0, visibleCount);
-
     grid.innerHTML = "";
 
     const fragment = document.createDocumentFragment();
 
     for (const game of shown) {
       const card = document.createElement("button");
-
       card.type = "button";
       card.className = "lx-card";
       card.title = "Play " + (game.name || "game");
@@ -180,10 +292,7 @@
       action.textContent = "PLAY ↗";
 
       card.append(icon, title, action);
-
-      card.addEventListener("click", () => {
-        openGame(game);
-      });
+      card.addEventListener("click", () => openGame(game));
 
       fragment.append(card);
     }
@@ -194,7 +303,7 @@
 
     status.textContent = filtered.length
       ? "Showing " +
-        Math.min(visibleCount, filtered.length).toLocaleString() +
+        shown.length.toLocaleString() +
         " of " +
         filtered.length.toLocaleString() +
         " games"
@@ -203,28 +312,24 @@
     $("lx-more-wrap").hidden = visibleCount >= filtered.length;
   }
 
-  // Load additional game cards.
   $("lx-more").addEventListener("click", () => {
     visibleCount += PAGE_SIZE;
     render();
   });
 
-  // Search and sorting controls.
   search.addEventListener("input", applyFilters);
   sort.addEventListener("change", applyFilters);
 
-  // Load the game catalog.
   fetch(DATA_URL)
     .then(response => {
       if (!response.ok) {
         throw new Error("Catalog request failed: " + response.status);
       }
-
       return response.json();
     })
     .then(data => {
       if (!Array.isArray(data)) {
-        throw new Error("The game catalog must be a JSON array.");
+        throw new Error("The catalog must contain a JSON array.");
       }
 
       games = data.filter(game =>
@@ -236,11 +341,9 @@
       applyFilters();
     })
     .catch(error => {
-      count.textContent = "Catalog unavailable";
-
-      status.textContent =
-        "Could not load the game catalog. Check the catalog URL and repository.";
-
       console.error("LACTOSE catalog error:", error);
+      count.textContent = "Catalog unavailable";
+      status.textContent =
+        "Could not load the catalog. Check the catalog URL and repository.";
     });
 })();
