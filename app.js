@@ -169,54 +169,8 @@
     tab.document.close();
   }
 
-  function normalizeGameHtml(html, sourceURL) {
-    if (!html || typeof html !== "string") {
-      return html;
-    }
-
-    const base = sourceURL;
-    const rewriteAttribute = (tag, attribute) => {
-      const attrPattern = new RegExp(attribute + "\\s*=\\s*['\"]([^'\"]+)['\"]", "gi");
-      let match;
-
-      while ((match = attrPattern.exec(html)) !== null) {
-        const originalValue = match[1];
-        if (!originalValue || /^data:|^javascript:|^#|^mailto:|^tel:|^about:|^https?:\/\//i.test(originalValue)) {
-          continue;
-        }
-
-        try {
-          const absoluteURL = new URL(originalValue, base).href;
-          html = html.replace(match[0], match[0].replace(originalValue, absoluteURL));
-          attrPattern.lastIndex = match.index + match[0].length + 1;
-        } catch (error) {
-          console.warn("Could not rewrite " + attribute + " in game HTML:", error);
-        }
-      }
-
-      return html;
-    };
-
-    html = rewriteAttribute("url", "src");
-    html = rewriteAttribute("url", "href");
-    html = rewriteAttribute("url", "poster");
-
-    if (!/<base\b/i.test(html)) {
-      const baseTag = `<base href="${base.replace(/"/g, "&quot;")}">`;
-
-      if (/<head\b[^>]*>/i.test(html)) {
-        html = html.replace(/<head\b[^>]*>/i, match => match + baseTag);
-      } else {
-        html = baseTag + html;
-      }
-    }
-
-    return html;
-  }
-
   function openGame(game) {
-    // Open synchronously during the click to reduce popup blocking.
-    const gameTab = window.open("about:blank", "_blank");
+    const gameTab = window.open("", "_blank");
 
     if (!gameTab) {
       status.textContent =
@@ -224,7 +178,7 @@
       return;
     }
 
-    showMessage(gameTab, "Opening " + game.name, "Loading game HTML…");
+    showMessage(gameTab, "Opening " + game.name, "Loading the hosted game…");
 
     filesPromise
       .then(files => {
@@ -243,36 +197,13 @@
 
         const gameURL = PAGES_BASE + "/" + encodedPath;
 
-        // Fetch the HTML source instead of redirecting to the game URL.
-        return fetch(gameURL).then(response => {
-          if (!response.ok) {
-            throw new Error(
-              "Could not load game HTML (" + response.status + ")."
-            );
-          }
-          return response.text();
-        }).then(html => ({ html, gameURL }));
-      })
-      .then(({ html, gameURL }) => {
         if (gameTab.closed) return;
 
-        html = normalizeGameHtml(html, gameURL);
-
-        // Write the fetched source into about:blank to run it there.
-        gameTab.document.open();
-        gameTab.document.write(html);
-        gameTab.document.close();
+        gameTab.opener = null;
+        gameTab.location.href = gameURL;
       })
       .catch(error => {
         console.error("LACTOSE game loading error:", error);
-
-        showMessage(
-          gameTab,
-          "Couldn't load " + game.name,
-          error.message +
-          " If this happens on your school computer, its network may be blocking a required GitHub address."
-        );
-
         status.textContent = "Couldn't load " + game.name + ".";
       });
   }
