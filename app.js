@@ -169,6 +169,51 @@
     tab.document.close();
   }
 
+  function normalizeGameHtml(html, sourceURL) {
+    if (!html || typeof html !== "string") {
+      return html;
+    }
+
+    const base = sourceURL;
+    const rewriteAttribute = (tag, attribute) => {
+      const attrPattern = new RegExp(attribute + "\\s*=\\s*['\"]([^'\"]+)['\"]", "gi");
+      let match;
+
+      while ((match = attrPattern.exec(html)) !== null) {
+        const originalValue = match[1];
+        if (!originalValue || /^data:|^javascript:|^#|^mailto:|^tel:|^about:|^https?:\/\//i.test(originalValue)) {
+          continue;
+        }
+
+        try {
+          const absoluteURL = new URL(originalValue, base).href;
+          html = html.replace(match[0], match[0].replace(originalValue, absoluteURL));
+          attrPattern.lastIndex = match.index + match[0].length + 1;
+        } catch (error) {
+          console.warn("Could not rewrite " + attribute + " in game HTML:", error);
+        }
+      }
+
+      return html;
+    };
+
+    html = rewriteAttribute("url", "src");
+    html = rewriteAttribute("url", "href");
+    html = rewriteAttribute("url", "poster");
+
+    if (!/<base\b/i.test(html)) {
+      const baseTag = `<base href="${base.replace(/"/g, "&quot;")}">`;
+
+      if (/<head\b[^>]*>/i.test(html)) {
+        html = html.replace(/<head\b[^>]*>/i, match => match + baseTag);
+      } else {
+        html = baseTag + html;
+      }
+    }
+
+    return html;
+  }
+
   function openGame(game) {
     // Open synchronously during the click to reduce popup blocking.
     const gameTab = window.open("about:blank", "_blank");
@@ -211,19 +256,7 @@
       .then(({ html, gameURL }) => {
         if (gameTab.closed) return;
 
-        // Make relative URLs inside the game resolve against its
-        // original GitHub Pages location.
-        if (!/<base\b/i.test(html)) {
-          const baseTag = `<base href="${gameURL.replace(/"/g, "&quot;")}">`;
-
-          if (/<head\b[^>]*>/i.test(html)) {
-            html = html.replace(/<head\b[^>]*>/i, match =>
-              match + baseTag
-            );
-          } else {
-            html = baseTag + html;
-          }
-        }
+        html = normalizeGameHtml(html, gameURL);
 
         // Write the fetched source into about:blank to run it there.
         gameTab.document.open();
