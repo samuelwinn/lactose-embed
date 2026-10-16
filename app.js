@@ -3,17 +3,75 @@
   const root = document.getElementById("lactose-app");
   if (!root) return;
 
-  // Load the catalog directly from GitHub instead of jsDelivr.
   const DATA_URL =
-    "https://raw.githubusercontent.com/samuelwinn/lactose-embed/main/games-catalog.json";
+    "https://cdn.jsdelivr.net/gh/samuelwinn/lactose-embed@main/games-catalog.json";
 
   const TREE_URL =
     "https://api.github.com/repos/samuelwinn/lactose-games/git/trees/main?recursive=1";
 
-  const PAGES_BASE =
-    "https://samuelwinn.github.io/lactose-games";
+  const GAMES_BASE =
+    "https://cdn.jsdelivr.net/gh/samuelwinn/lactose-games@main";
 
   root.innerHTML = `
+    <style>
+      .lx-viewer {
+        position: fixed;
+        inset: 20px 20px 20px 20px;
+        display: flex;
+        flex-direction: column;
+        background: rgba(16, 17, 19, 0.97);
+        border: 1px solid #2a2b30;
+        border-radius: 18px;
+        overflow: hidden;
+        z-index: 30;
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+      }
+      .lx-viewer[hidden] { display: none; }
+      .lx-viewer-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 16px;
+        background: #17191d;
+        border-bottom: 1px solid #2c2d33;
+      }
+      .lx-viewer-bar strong {
+        font-size: 15px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #fff;
+      }
+      .lx-viewer-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .lx-viewer-actions button,
+      .lx-viewer-actions button:hover {
+        background: #1d1e22;
+        color: #f4f4f5;
+        border: 1px solid #363840;
+        border-radius: 10px;
+        padding: 8px 12px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #lx-frame {
+        width: 100%;
+        height: 100%;
+        border: 0;
+        background: #000;
+      }
+      @media (max-width: 640px) {
+        .lx-viewer {
+          inset: 12px;
+        }
+        .lx-viewer-bar {
+          flex-wrap: wrap;
+        }
+      }
+    </style>
     <div class="lx-shell">
       <header class="lx-header">
         <div class="lx-brand">
@@ -44,6 +102,17 @@
       <div class="lx-more" id="lx-more-wrap" hidden>
         <button id="lx-more" type="button">Load more</button>
       </div>
+
+      <div id="lx-viewer" class="lx-viewer" hidden>
+        <div class="lx-viewer-bar">
+          <strong id="lx-game-title">Game</strong>
+          <div class="lx-viewer-actions">
+            <button id="lx-open-new" type="button">Open in new tab</button>
+            <button id="lx-close" type="button" aria-label="Close game">✕ Close</button>
+          </div>
+        </div>
+        <iframe id="lx-frame" title="Game" allow="fullscreen; autoplay; gamepad; clipboard-read; clipboard-write" allowfullscreen loading="lazy"></iframe>
+      </div>
     </div>
   `;
 
@@ -53,10 +122,16 @@
   const sort = $("lx-sort");
   const status = $("lx-status");
   const count = $("lx-count");
+  const viewer = $("lx-viewer");
+  const frame = $("lx-frame");
+  const viewerTitle = $("lx-game-title");
+  const closeButton = $("lx-close");
+  const openNewButton = $("lx-open-new");
 
   let games = [];
   let filtered = [];
   let visibleCount = 60;
+  let activeGame = null;
 
   const PAGE_SIZE = 60;
 
@@ -135,6 +210,93 @@
     })[character]);
   }
 
+  function buildGameUrl(filePath) {
+    const normalized = String(filePath || "")
+      .replace(/\\/g, "/")
+      .replace(/^\/+/, "")
+      .replace(/\/+/g, "/");
+
+    const parts = normalized
+      .split("/")
+      .filter(Boolean)
+      .map(part => encodeURIComponent(part));
+
+    return parts.length ? GAMES_BASE + "/" + parts.join("/") : GAMES_BASE + "/";
+  }
+
+  function buildGameBaseUrl(filePath) {
+    const normalized = String(filePath || "")
+      .replace(/\\/g, "/")
+      .replace(/^\/+/, "")
+      .replace(/\/+/g, "/");
+
+    const directory = normalized.includes("/")
+      ? normalized.slice(0, normalized.lastIndexOf("/") + 1)
+      : "";
+
+    return (GAMES_BASE + "/" + directory).replace(/\/+$/, "/");
+  }
+
+  function rewriteRootRelativeUrls(html) {
+    return html
+      .replace(/((?:src|href)\s*=\s*)(["'])(\/[^"']+?)(\2)/gi, (match, prefix, quote, value) => {
+        if (/^(?:[a-z]+:)?\/\//i.test(value) || /^data:/i.test(value)) {
+          return match;
+        }
+        return prefix + quote + value.replace(/^\/+/, "") + quote;
+      })
+      .replace(/url\(\s*(["']?)(\/[^"')]+)\1\s*\)/gi, (match, quote, value) => {
+        if (/^(?:[a-z]+:)?\/\//i.test(value) || /^data:/i.test(value)) {
+          return match;
+        }
+        return "url(" + quote + value.replace(/^\/+/, "") + quote + ")";
+      });
+  }
+
+  function injectGameBase(html, filePath) {
+    const baseHref = buildGameBaseUrl(filePath);
+    const baseTag = '<base href="' + baseHref + '">';
+    const normalized = rewriteRootRelativeUrls(html);
+
+    if (/<base\s+[^>]*href\s*=/i.test(normalized)) {
+      return normalized.replace(/<base\s+[^>]*href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>/i, match => {
+        const existing = (RegExp.$1 || RegExp.$2 || RegExp.$3 || "").trim();
+        if (!existing) return baseTag;
+
+        try {
+          const parsedExisting = new URL(existing, "https://example.com/");
+          const parsedBase = new URL(baseHref);
+          if (
+            parsedExisting.origin === parsedBase.origin &&
+            parsedExisting.pathname.startsWith(parsedBase.pathname)
+          ) {
+            return match;
+          }
+        } catch (error) {
+          // Preserve a valid local fallback when the HTML already contains a broken base.
+        }
+
+        return baseTag;
+      });
+    }
+
+    return normalized.replace(/<head\b[^>]*>/i, match => match + baseTag);
+  }
+
+  function writeDocument(targetWindow, html) {
+    if (!targetWindow || !targetWindow.document) return false;
+
+    try {
+      targetWindow.document.open();
+      targetWindow.document.write(html);
+      targetWindow.document.close();
+      return true;
+    } catch (error) {
+      console.error("LACTOSE iframe write failed:", error);
+      return false;
+    }
+  }
+
   function showMessage(tab, title, message) {
     if (!tab || tab.closed) return;
 
@@ -169,8 +331,21 @@
     tab.document.close();
   }
 
-  function openGame(game) {
-    const gameTab = window.open("", "_blank");
+  function loadIntoViewer(game, file, html) {
+    activeGame = game;
+    viewerTitle.textContent = game.name || "Game";
+    viewer.hidden = false;
+
+    const prepared = injectGameBase(html, file.path);
+    const iframeReady = writeDocument(frame.contentWindow, prepared);
+
+    if (!iframeReady) {
+      status.textContent = "Couldn't render " + game.name + ".";
+    }
+  }
+
+  function openGameInNewTab(game) {
+    const gameTab = window.open("about:blank", "_blank");
 
     if (!gameTab) {
       status.textContent =
@@ -190,17 +365,65 @@
           );
         }
 
-        const encodedPath = file.path
-          .split("/")
-          .map(part => encodeURIComponent(part))
-          .join("/");
-
-        const gameURL = PAGES_BASE + "/" + encodedPath;
+        const gameURL = buildGameUrl(file.path);
 
         if (gameTab.closed) return;
 
-        gameTab.opener = null;
-        gameTab.location.href = gameURL;
+        return fetch(gameURL, { cache: "no-store" })
+          .then(response => {
+            if (!response.ok) {
+              throw new Error(
+                "Game request failed (" + response.status + ")."
+              );
+            }
+            return response.text().then(html => ({ file, html }));
+          })
+          .then(({ file, html }) => {
+            if (gameTab.closed) return;
+
+            gameTab.opener = null;
+            const prepared = injectGameBase(html, file.path);
+            writeDocument(gameTab, prepared);
+          });
+      })
+      .catch(error => {
+        console.error("LACTOSE game loading error:", error);
+        status.textContent = "Couldn't load " + game.name + ".";
+        if (gameTab && !gameTab.closed) {
+          showMessage(gameTab, "Load failed", "The game could not be opened from jsDelivr.");
+        }
+      });
+  }
+
+  function openGame(game) {
+    activeGame = game;
+    status.textContent = "Loading " + game.name + "…";
+
+    filesPromise
+      .then(files => {
+        const file = findGameFile(game, files);
+
+        if (!file) {
+          throw new Error(
+            'No unique HTML filename matches "' + game.name + '".'
+          );
+        }
+
+        const gameURL = buildGameUrl(file.path);
+
+        return fetch(gameURL, { cache: "no-store" })
+          .then(response => {
+            if (!response.ok) {
+              throw new Error(
+                "Game request failed (" + response.status + ")."
+              );
+            }
+            return response.text().then(html => ({ file, html }));
+          })
+          .then(({ file, html }) => {
+            loadIntoViewer(game, file, html);
+            status.textContent = "Loaded " + game.name + ".";
+          });
       })
       .catch(error => {
         console.error("LACTOSE game loading error:", error);
@@ -277,6 +500,16 @@
 
   search.addEventListener("input", applyFilters);
   sort.addEventListener("change", applyFilters);
+  closeButton.addEventListener("click", () => {
+    viewer.hidden = true;
+  });
+  openNewButton.addEventListener("click", () => {
+    if (activeGame) {
+      openGameInNewTab(activeGame);
+    } else {
+      status.textContent = "Select a game to open it in a new tab.";
+    }
+  });
 
   fetch(DATA_URL)
     .then(response => {
